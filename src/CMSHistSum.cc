@@ -1,5 +1,6 @@
 #include "../interface/CMSHistSum.h"
 #include "../interface/CMSHistFuncWrapper.h"
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 #include <ostream>
@@ -16,6 +17,12 @@
 #include "vectorized.h"
 
 #define HFVERBOSE 0
+
+namespace {
+  // lower bound of the summed per-bin expectation of the in-situ background group (processes carrying the
+  // "inSituGroup" attribute, e.g. control region templates subtracted through a negative rateParam)
+  constexpr double kInSituFloor = 1e-9;
+}
 
 bool CMSHistSum::enable_fast_vertical_ = false;
 
@@ -48,6 +55,7 @@ CMSHistSum::CMSHistSum(const char* name,
   binerrors_.resize(n_procs_);
   vtype_.resize(n_procs_);
   vsmooth_par_.resize(n_procs_);
+  insitu_procs_.resize(n_procs_, 0);
 
   // First pass through the list of processes - we don't know the number of
   // vertical morphing parameters yet.
@@ -87,6 +95,7 @@ CMSHistSum::CMSHistSum(const char* name,
     binerrors_[ip] = func->binerrors_;
     vtype_[ip] = func->vtype_;
     vsmooth_par_[ip] = func->vsmooth_par_;
+    insitu_procs_[ip] = func->attributes().count("inSituGroup") ? 1 : 0;
   }
 
   // Populate a list of the morphing parameter names,
@@ -183,6 +192,7 @@ CMSHistSum::CMSHistSum(
       binerrors_(other.binerrors_),
       vtype_(other.vtype_),
       vsmooth_par_(other.vsmooth_par_),
+      insitu_procs_(other.insitu_procs_),
       bintypes_(other.bintypes_),
       cache_(other.cache_),
       sentry_(name ? TString(name) + "_sentry" : TString(other.GetName())+"_sentry", ""),
@@ -238,6 +248,13 @@ void CMSHistSum::initialize() const {
   binmods_.resize(n_procs_, std::vector<double>(nb, 0.));
   scaledbinmods_.resize(n_procs_, std::vector<double>(nb, 0.));
   coeffvals_.resize(n_procs_, 0.);
+
+  insitu_idx_.clear();
+  for (int ip = 0; ip < n_procs_; ++ip) {
+    if (ip < int(insitu_procs_.size()) && insitu_procs_[ip]) insitu_idx_.push_back(ip);
+  }
+  insitu_sum_.assign(nb, 0.);
+  insitu_deficit_.assign(nb, 0.);
 
   sentry_.addVars(morphpars_);
   sentry_.addVars(coeffpars_);
@@ -332,6 +349,8 @@ void CMSHistSum::updateCache() const {
 
     valsum_.Clear();
     std::fill(err2sum_.begin(), err2sum_.end(), 0.);
+    const bool has_insitu = !insitu_idx_.empty();
+    if (has_insitu) std::fill(insitu_sum_.begin(), insitu_sum_.end(), 0.);
     for (unsigned i = 0; i < vcoeffpars_.size(); ++i) {
       staging_ = compcache_[i];
       if (vtype_[i] == CMSHistFunc::VerticalSetting::LogQuadLinear) {
@@ -340,8 +359,19 @@ void CMSHistSum::updateCache() const {
       staging_.CropUnderflows();
       vectorized::mul_add(valsum_.size(), coeffvals_[i], &(staging_[0]), &valsum_[0]);
       vectorized::mul_add_sqr(valsum_.size(), coeffvals_[i], &(binerrors_[i][0]), &err2sum_[0]);
+      if (has_insitu && insitu_procs_[i]) {
+        vectorized::mul_add(valsum_.size(), coeffvals_[i], &(staging_[0]), &insitu_sum_[0]);
+      }
     }
     vectorized::sqrt(valsum_.size(), &err2sum_[0], &toterr_[0]);
+
+    // in-situ background group: floor the summed expectation of the marked processes bin by bin
+    if (has_insitu) {
+      for (unsigned j = 0; j < valsum_.size(); ++j) {
+        insitu_deficit_[j] = std::max(kInSituFloor - insitu_sum_[j], 0.);
+        valsum_[j] += insitu_deficit_[j];
+      }
+    }
     cache_ = valsum_;
     #if HFVERBOSE > 0
       std::cout << "Updated cache\n";
@@ -379,6 +409,16 @@ void CMSHistSum::updateCache() const {
             scaledbinmods_[i][j] = vbinpars_[j][i]->getVal() * binerrors_[i][j];
             cache_[j] += (scaledbinmods_[i][j] * coeffvals_[i]);
           }
+        }
+        if (!insitu_idx_.empty()) {
+          // re-evaluate the floor of the in-situ group including the bin modifications of its members
+          double group = insitu_sum_[j];
+          for (unsigned i : insitu_idx_) {
+            if (i < bintypes_[j].size() && (bintypes_[j][i] == 2 || bintypes_[j][i] == 3)) {
+              group += scaledbinmods_[i][j] * coeffvals_[i];
+            }
+          }
+          cache_[j] += std::max(kInSituFloor - group, 0.) - insitu_deficit_[j];
         }
       }
     }
@@ -516,11 +556,23 @@ RooArgList * CMSHistSum::setupBinPars(double poissonThreshold) {
     for (auto &s: skipped_procs) std::cout << " " << s;
     std::cout << "\n";
   }
+  // per-process yields after all normalisation terms (lnN, rateParams, ...) have been applied
+  std::cout << "Per-process yields including all normalisation factors:\n";
+  std::cout << TString::Format("  %-50s %15s %15s\n", "Process", "Coefficient", "Yield");
+  for (unsigned i = 0; i < vfuncstmp_.size(); ++i) {
+    double integral = 0.;
+    for (unsigned j = 0; j < valsum_.size(); ++j) integral += vfuncstmp_[i]->cache()[j] * coeffvals_[i];
+    std::cout << TString::Format("  %-50s %15.6f %15.6f\n",
+        vfuncstmp_[i]->getStringAttribute("combine.process"), coeffvals_[i], integral);
+  }
   std::cout << std::string(60, '=') << "\n";
   std::cout << TString::Format("%-10s %-15s %-15s %-30s\n", "Bin", "Contents", "Error", "Notes");
 
   for (unsigned j = 0; j < valsum_.size(); ++j) {
     std::cout << TString::Format("%-10i %-15f %-15f %-30s\n", j, valsum_[j], toterr_[j], "total sum");
+    if (!insitu_idx_.empty()) {
+      std::cout << TString::Format("%-10i %-15f %-15f %-30s\n", j, insitu_sum_[j], insitu_deficit_[j], "in-situ group sum, floor deficit");
+    }
     double sub_sum = 0.;
     double sub_err = 0.;
     // Check using a possible sub-set of bins
@@ -531,6 +583,8 @@ RooArgList * CMSHistSum::setupBinPars(double poissonThreshold) {
       sub_sum += vfuncstmp_[i]->cache()[j] * coeffvals_[i];
       sub_err += std::pow(vfuncstmp_[i]->errors()[j] * coeffvals_[i], 2.);;
     }
+    // the in-situ group is never marked, so its floor deficit belongs to the sub-sum as well
+    if (!insitu_idx_.empty()) sub_sum += insitu_deficit_[j];
     sub_err = std::sqrt(sub_err);
     if (skipped_procs.size()) {
       std::cout << TString::Format("%-10i %-15f %-15f %-30s\n", j, sub_sum, sub_err, "excluding marked processes");

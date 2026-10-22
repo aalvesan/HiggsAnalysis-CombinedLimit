@@ -138,6 +138,15 @@ def addDatacardParserOptions(parser):
         help="Use memory-optimized CMSHistSum instead of CMSHistErrorPropagator",
     )
     parser.add_option(
+        "--in-situ-marker",
+        dest="inSituMarker",
+        default="_QCDCR",
+        type="string",
+        help="Substring marking the processes of an in-situ background group, e.g. control region templates that "
+        "are subtracted through a negative rateParam. In autoMCStats channels the summed per-bin expectation of "
+        "the group is floored at zero before entering the likelihood. Pass an empty string to disable.",
+    )
+    parser.add_option(
         "--no-optimize-pdfs",
         dest="noOptimizePdf",
         default=False,

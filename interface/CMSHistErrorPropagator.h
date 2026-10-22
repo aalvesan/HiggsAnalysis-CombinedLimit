@@ -86,6 +86,9 @@ public:
   std::vector<std::vector<unsigned>> bintypes_;
 
   mutable std::vector<double> coeffvals_; //!
+  mutable std::vector<unsigned> insitu_idx_; //! indices of the processes forming the in-situ background group
+  mutable std::vector<double> insitu_sum_; //! per-bin sum of the in-situ group with nominal coefficients
+  mutable std::vector<double> insitu_deficit_; //! per-bin amount added to the total to floor the in-situ group
   mutable FastHisto valsum_; //!
   mutable FastHisto cache_; //!
   mutable std::vector<double> err2sum_; //!

@@ -182,6 +182,10 @@ class ShapeBuilder(ModelBuilder):
                     elif p.endswith("_datadriven"):
                         pdf.setAttribute("skipForErrorSum")
                         pdf.setAttribute("skipForAutoMCStats")
+                    if self.options.inSituMarker and self.options.inSituMarker in p:
+                        # member of the in-situ background group: the summed expectation of all members is
+                        # floored at zero bin by bin inside CMSHistErrorPropagator / CMSHistSum
+                        pdf.setAttribute("inSituGroup")
                 coeff.setStringAttribute("combine.process", p)
                 coeff.setStringAttribute("combine.channel", b)
                 coeff.setAttribute("combine.signal", self.DC.isSignal[p])

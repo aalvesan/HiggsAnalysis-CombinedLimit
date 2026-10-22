@@ -94,6 +94,7 @@ public:
 
   std::vector<CMSHistFunc::VerticalSetting> vtype_; // Vertical morphing type for each process
   std::vector<double> vsmooth_par_; // Vertical morphing smooth region for each process
+  std::vector<int> insitu_procs_; // Per-process flag: member of the in-situ background group (summed and floored at zero)
 
   mutable std::vector<CMSHistFunc const*> vfuncstmp_; //!
   mutable std::vector<RooAbsReal const*> vcoeffpars_; //!
@@ -102,6 +103,9 @@ public:
   std::vector<std::vector<unsigned>> bintypes_;
 
   mutable std::vector<double> coeffvals_; //!
+  mutable std::vector<unsigned> insitu_idx_; //! indices of the processes forming the in-situ background group
+  mutable std::vector<double> insitu_sum_; //! per-bin sum of the in-situ group with nominal coefficients
+  mutable std::vector<double> insitu_deficit_; //! per-bin amount added to the total to floor the in-situ group
 
   mutable std::vector<FastHisto> compcache_; //!
   mutable FastHisto staging_; //!
@@ -143,7 +147,7 @@ public:
 
 
  private:
-  ClassDef(CMSHistSum,1)
+  ClassDef(CMSHistSum,2)
 };
 
 #endif
